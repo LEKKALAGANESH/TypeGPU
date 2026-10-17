@@ -281,3 +281,101 @@ export const sdCappedTorus = tgpu.fn(
       : length(vec2f(length(p.xy) - majorRadius, p.z));
   return dist - minorRadius;
 });
+
+/**
+ * Signed distance function for a cone with its tip at the origin, opening downwards along
+ * the Y axis to a flat base at `y = -height`.
+ *
+ * @param point Point to evaluate, relative to the cone's tip
+ * @param sc Sine and cosine of the cone's half-angle at the tip:
+ * `vec2f(sin(angle / 2), cos(angle / 2))`, with the half-angle between 0 and PI / 2
+ * @param height Distance from the tip to the base (positive)
+ * @returns Negative inside the cone, zero on its surface, positive outside
+ */
+export const sdCone = tgpu.fn(
+  [vec3f, vec2f, f32],
+  f32,
+)((point, sc, height) => {
+  'use gpu';
+  // edge of the base in the (radial, y) half-plane
+  const q = vec2f(sc.x / sc.y, -1) * height;
+  const w = vec2f(length(point.xz), point.y);
+  const a = w - q * clamp(dot(w, q) / dot(q, q), 0, 1);
+  const b = w - q * vec2f(clamp(w.x / q.x, 0, 1), 1);
+  const s = max(w.y * q.x - w.x * q.y, q.y - w.y);
+  return sqrt(min(dot(a, a), dot(b, b))) * sign(s);
+});
+
+/**
+ * Signed distance function for a round cone: two spheres along the Y axis, joined by their
+ * shared tangent cone. The bottom sphere is centered at the origin, the top one at
+ * `(0, height, 0)`.
+ *
+ * @param point Point to evaluate, relative to the bottom sphere's center
+ * @param bottomRadius Radius of the bottom sphere (non-negative)
+ * @param topRadius Radius of the top sphere (non-negative)
+ * @param height Distance between the sphere centers; must be greater than
+ * `abs(bottomRadius - topRadius)`
+ * @returns Negative inside the shape, zero on its surface, positive outside
+ */
+export const sdRoundCone = tgpu.fn(
+  [vec3f, f32, f32, f32],
+  f32,
+)((point, bottomRadius, topRadius, height) => {
+  'use gpu';
+  // sine and cosine of the angle between the tangent line and the Y axis
+  const b = (bottomRadius - topRadius) / height;
+  const a = sqrt(1 - b * b);
+  const q = vec2f(length(point.xz), point.y);
+  const k = dot(q, vec2f(-b, a));
+  return k < 0
+    ? length(q) - bottomRadius
+    : k > a * height
+      ? length(q - vec2f(0, height)) - topRadius
+      : dot(q, vec2f(a, b)) - bottomRadius;
+});
+
+/**
+ * Signed distance function for a regular octahedron centered at the origin, with its
+ * vertices on the coordinate axes.
+ *
+ * @param point Point to evaluate, relative to the octahedron's center
+ * @param size Distance from the center to each vertex (non-negative)
+ * @returns Negative inside the octahedron, zero on its surface, positive outside
+ */
+export const sdOctahedron = tgpu.fn(
+  [vec3f, f32],
+  f32,
+)((point, size) => {
+  'use gpu';
+  const p = abs(point);
+  const m = p.x + p.y + p.z - size;
+  // inside, or nearest to the face itself: the distance to the face plane is exact
+  if (3 * p.x >= m && 3 * p.y >= m && 3 * p.z >= m) {
+    return m * 0.57735027; // 1 / sqrt(3)
+  }
+  // otherwise nearest to an edge: rotate the axes so the edge is handled in one place
+  const q = select(select(p.zxy, p.yzx, 3 * p.y < m), p, 3 * p.x < m);
+  const k = clamp(0.5 * (q.z - q.y + size), 0, size);
+  return length(vec3f(q.x, q.y - size + k, q.z - k));
+});
+
+/**
+ * Approximate signed distance function for an ellipsoid centered at the origin.
+ * The result is not exact away from the surface, but has the correct sign and is close
+ * near the surface, which is enough for ray marching. It is undefined exactly at the
+ * center.
+ *
+ * @param point Point to evaluate, relative to the ellipsoid's center
+ * @param radii Semi-axes of the ellipsoid along X, Y and Z (positive)
+ * @returns Negative inside the ellipsoid, zero on its surface, positive outside
+ */
+export const sdEllipsoid = tgpu.fn(
+  [vec3f, vec3f],
+  f32,
+)((point, radii) => {
+  'use gpu';
+  const k0 = length(point / radii);
+  const k1 = length(point / (radii * radii));
+  return (k0 * (k0 - 1)) / k1;
+});

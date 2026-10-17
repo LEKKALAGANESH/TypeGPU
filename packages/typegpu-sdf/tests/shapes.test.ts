@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { d, tgpu } from 'typegpu';
-import { sdCappedTorus, sdgHexagon2d, sdHexagon2d, sdTorus } from '../src/index.ts';
+import {
+  sdCappedTorus,
+  sdCone,
+  sdEllipsoid,
+  sdgHexagon2d,
+  sdHexagon2d,
+  sdOctahedron,
+  sdRoundCone,
+  sdTorus,
+} from '../src/index.ts';
 
 const SQRT3 = Math.sqrt(3);
 
@@ -138,6 +147,126 @@ describe('sdgHexagon2d', () => {
         let d = (length(p) * sign(p.y));
         let g = select(p, vec2f(((-(k.y) * p.x) - (k.x * p.y)), ((-(k.x) * p.x) + (k.y * p.y))), (w < 0f));
         return vec3f(d, ((s * g) / d));
+      }"
+    `);
+  });
+});
+
+describe('sdCone', () => {
+  // a 90 degree cone: base radius equals the height
+  const sc = d.vec2f(Math.SQRT1_2, Math.SQRT1_2);
+
+  it('is zero at the tip, on the base rim and on the base, negative inside, positive outside', () => {
+    expect(sdCone(d.vec3f(0, 0, 0), sc, 1)).toBeCloseTo(0);
+    expect(sdCone(d.vec3f(1, -1, 0), sc, 1)).toBeCloseTo(0);
+    expect(sdCone(d.vec3f(0, -1, 0), sc, 1)).toBeCloseTo(0);
+    // closer to the slanted side (0.5 / sqrt(2)) than to the base (0.5)
+    expect(sdCone(d.vec3f(0, -0.5, 0), sc, 1)).toBeCloseTo(-0.5 * Math.SQRT1_2);
+    expect(sdCone(d.vec3f(0, 1, 0), sc, 1)).toBeCloseTo(1);
+    expect(sdCone(d.vec3f(0, -2, 0), sc, 1)).toBeCloseTo(1);
+    expect(sdCone(d.vec3f(2, -1, 0), sc, 1)).toBeCloseTo(1);
+  });
+
+  it('is rotationally symmetric around Y', () => {
+    expect(sdCone(d.vec3f(0.3, -0.4, 0.4), sc, 1)).toBeCloseTo(
+      sdCone(d.vec3f(0.5, -0.4, 0), sc, 1),
+    );
+  });
+
+  it('resolves to WGSL', () => {
+    expect(tgpu.resolve([sdCone])).toMatchInlineSnapshot(`
+      "fn sdCone(point: vec3f, sc: vec2f, height: f32) -> f32 {
+        let q = (vec2f((sc.x / sc.y), -1f) * height);
+        let w = vec2f(length(point.xz), point.y);
+        let a = (w - (q * clamp((dot(w, q) / dot(q, q)), 0f, 1f)));
+        let b = (w - (q * vec2f(clamp((w.x / q.x), 0f, 1f), 1f)));
+        let s = max(((w.y * q.x) - (w.x * q.y)), (q.y - w.y));
+        return (sqrt(min(dot(a, a), dot(b, b))) * sign(s));
+      }"
+    `);
+  });
+});
+
+describe('sdRoundCone', () => {
+  it('is zero at the extreme points, negative inside, positive outside', () => {
+    expect(sdRoundCone(d.vec3f(0, -0.5, 0), 0.5, 0.25, 1)).toBeCloseTo(0);
+    expect(sdRoundCone(d.vec3f(0, 1.25, 0), 0.5, 0.25, 1)).toBeCloseTo(0);
+    expect(sdRoundCone(d.vec3f(0, 0, 0), 0.5, 0.25, 1)).toBeCloseTo(-0.5);
+    expect(sdRoundCone(d.vec3f(0, 2, 0), 0.5, 0.25, 1)).toBeCloseTo(0.75);
+    expect(sdRoundCone(d.vec3f(0, -1.5, 0), 0.5, 0.25, 1)).toBeCloseTo(1);
+  });
+
+  it('becomes a capsule when both radii are equal', () => {
+    expect(sdRoundCone(d.vec3f(0.3, 0.5, 0), 0.3, 0.3, 1)).toBeCloseTo(0);
+    expect(sdRoundCone(d.vec3f(1, 0.5, 0), 0.3, 0.3, 1)).toBeCloseTo(0.7);
+  });
+
+  it('resolves to WGSL', () => {
+    expect(tgpu.resolve([sdRoundCone])).toMatchInlineSnapshot(`
+      "fn sdRoundCone(point: vec3f, bottomRadius: f32, topRadius: f32, height: f32) -> f32 {
+        let b = ((bottomRadius - topRadius) / height);
+        let a = sqrt((1f - (b * b)));
+        let q = vec2f(length(point.xz), point.y);
+        let k = dot(q, vec2f(-(b), a));
+        return select(select((dot(q, vec2f(a, b)) - bottomRadius), (length((q - vec2f(0f, height))) - topRadius), (k > (a * height))), (length(q) - bottomRadius), (k < 0f));
+      }"
+    `);
+  });
+});
+
+describe('sdOctahedron', () => {
+  it('is zero on vertices and face centers, negative inside, positive outside', () => {
+    expect(sdOctahedron(d.vec3f(1, 0, 0), 1)).toBeCloseTo(0);
+    expect(sdOctahedron(d.vec3f(0, 0, -1), 1)).toBeCloseTo(0);
+    expect(sdOctahedron(d.vec3f(1 / 3, 1 / 3, 1 / 3), 1)).toBeCloseTo(0);
+    expect(sdOctahedron(d.vec3f(0, 0, 0), 1)).toBeCloseTo(-1 / SQRT3);
+  });
+
+  it('measures to the nearest vertex, edge or face outside', () => {
+    expect(sdOctahedron(d.vec3f(2, 0, 0), 1)).toBeCloseTo(1);
+    // nearest point is the middle of the edge between (1, 0, 0) and (0, 1, 0)
+    expect(sdOctahedron(d.vec3f(1, 1, 0), 1)).toBeCloseTo(Math.SQRT1_2);
+    expect(sdOctahedron(d.vec3f(1, 1, 1), 1)).toBeCloseTo(2 / SQRT3);
+  });
+
+  it('resolves to WGSL', () => {
+    expect(tgpu.resolve([sdOctahedron])).toMatchInlineSnapshot(`
+      "fn sdOctahedron(point: vec3f, size: f32) -> f32 {
+        let p = abs(point);
+        let m = (((p.x + p.y) + p.z) - size);
+        if (((((3f * p.x) >= m) && ((3f * p.y) >= m)) && ((3f * p.z) >= m))) {
+          return (m * 0.57735027f);
+        }
+        let q = select(select(p.zxy, p.yzx, ((3f * p.y) < m)), p, ((3f * p.x) < m));
+        let k = clamp((0.5f * ((q.z - q.y) + size)), 0f, size);
+        return length(vec3f(q.x, ((q.y - size) + k), (q.z - k)));
+      }"
+    `);
+  });
+});
+
+describe('sdEllipsoid', () => {
+  const radii = d.vec3f(2, 1, 0.5);
+
+  it('is zero on the surface, negative inside, positive outside', () => {
+    expect(sdEllipsoid(d.vec3f(2, 0, 0), radii)).toBeCloseTo(0);
+    expect(sdEllipsoid(d.vec3f(0, -1, 0), radii)).toBeCloseTo(0);
+    expect(sdEllipsoid(d.vec3f(0, 0, 0.5), radii)).toBeCloseTo(0);
+    expect(sdEllipsoid(d.vec3f(1, 0, 0), radii)).toBeLessThan(0);
+    expect(sdEllipsoid(d.vec3f(0, 0, 1), radii)).toBeGreaterThan(0);
+  });
+
+  it('is exact for a sphere', () => {
+    expect(sdEllipsoid(d.vec3f(0, 2, 0), d.vec3f(1))).toBeCloseTo(1);
+    expect(sdEllipsoid(d.vec3f(0, 0.5, 0), d.vec3f(1))).toBeCloseTo(-0.5);
+  });
+
+  it('resolves to WGSL', () => {
+    expect(tgpu.resolve([sdEllipsoid])).toMatchInlineSnapshot(`
+      "fn sdEllipsoid(point: vec3f, radii: vec3f) -> f32 {
+        let k0 = length((point / radii));
+        let k1 = length((point / (radii * radii)));
+        return ((k0 * (k0 - 1f)) / k1);
       }"
     `);
   });
